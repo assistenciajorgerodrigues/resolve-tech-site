@@ -1,19 +1,20 @@
-# Assistência Técnica Jorge Rodrigues — Cloudflare
+# Cloudflare — configuração de produção
 
-Bindings esperados no Worker:
-- `DB` → D1 database (o banco já ligado ao Worker pode ser reutilizado)
-- `MEDIA` → R2 bucket (o bucket já ligado ao Worker pode ser reutilizado)
+O projeto usa:
+- D1 `resolve-tech-db` como binding `DB`
+- R2 `resolve-tech-media` como binding `MEDIA`
 
-O projeto declara `DB` e `MEDIA` no build para que o Wrangler não publique uma versão sem bindings.
+No Workers Builds, configure:
 
-## Teste rápido após o deploy
-Abra:
-`https://SEU-WORKER.workers.dev/api/health`
+```text
+Build command: pnpm build
+Deploy command: pnpm deploy:cloudflare
+```
 
-Resultado esperado:
-`{"ok":true,"db":true,"media":true,"dbQuery":true,"mediaQuery":true}`
+O script `scripts/deploy-cloudflare.mjs` lê o binding D1 que já está ligado ao Worker `resolve-tech-site`, injeta o UUID correto no arquivo de deploy gerado e fixa o R2 antes de executar `wrangler deploy`.
 
-## Admin
-URL: `/admin`
-Usuário: `jorgemlr`
-Senha: `jorge160288`
+Se a descoberta automática não puder ler a versão atual do Worker, o script também tenta `wrangler d1 info`. Como último fallback, aceita a variável `CLOUDFLARE_D1_DATABASE_ID`.
+
+Depois do deploy:
+- `/api/health` testa leitura dos bindings.
+- Após login no `/admin`, `/api/health?deep=1` testa gravação/leitura/exclusão reais no D1 e R2.

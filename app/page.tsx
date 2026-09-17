@@ -14,7 +14,7 @@ type Receipt = { id: string; number: string; createdAt: string; customer: string
 type Review = { id: string; name: string; text: string; rating: number; photo: string; createdAt: string };
 type PortfolioVideo = { id: string; title: string; sourceType: "url" | "file"; src: string; visible: boolean; createdAt: string };
 
-const defaultCompany: Company = { brand: "Assistência Técnica Jorge Rodrigues", technician: "Jorge Rodrigues", document: "CPF/CNPJ: informe no painel", phone: "(21) 96927-8056", whatsapp: "5521969278056", address: "Rio de Janeiro - RJ", warranty: "90 dias", signatureSrc: "", signatureX: 50, signatureY: 82, signatureWidth: 28 };
+const defaultCompany: Company = { brand: "Assistência Técnica Jorge Rodrigues", technician: "Jorge Rodrigues", document: "CPF/CNPJ: informe no painel", phone: "(21) 96927-8056", whatsapp: "5521969278056", address: "Rio de Janeiro - RJ", warranty: "90 dias", signatureSrc: "/assinatura-jorge-de-melo-rodrigues.png", signatureX: 50, signatureY: 82, signatureWidth: 28 };
 const emptyReceipt: Receipt = { id: "", number: "", createdAt: new Date().toISOString().slice(0, 10), customer: "", customerPhone: "", equipment: "", brandModel: "", serial: "", problem: "", service: "", parts: "0,00", labor: "0,00", total: "0,00", payment: "Pix", warranty: "90 dias", notes: "", status: "Concluído" };
 const services = [
   { icon: WashingMachine, title: "Eletrodomésticos", text: "Diagnóstico e reparo com cuidado em cada detalhe." },
@@ -42,27 +42,31 @@ export default function HomePage() {
   const [search, setSearch] = useState("");
   const [toast, setToast] = useState("");
 
+  const loadData = async () => {
+    const response = await fetch("/api/data", { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data?.error || "Falha ao carregar dados");
+    setCompany({ ...defaultCompany, ...(data.company || {}) });
+    setReceipts(Array.isArray(data.receipts) ? data.receipts : []);
+    setReviews(Array.isArray(data.reviews) ? data.reviews : []);
+    setPortfolioVideos(Array.isArray(data.portfolioVideos) ? data.portfolioVideos : []);
+    setPortfolioEnabled(Boolean(data.portfolioEnabled));
+    return data;
+  };
+
   useEffect(() => {
     const adminPath = window.location.pathname === "/admin" || window.location.pathname.startsWith("/admin/");
-    const sessionActive = sessionStorage.getItem("resolve-session") === "active";
-    if (sessionActive) setLogged(true);
-    if (adminPath) {
-      if (sessionActive) setArea("painel");
-      else setLoginOpen(true);
-    }
-    fetch("/api/data", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("Falha ao carregar dados");
-        return response.json();
-      })
-      .then((data) => {
-        setCompany({ ...defaultCompany, ...(data.company || {}) });
-        setReceipts(Array.isArray(data.receipts) ? data.receipts : []);
-        setReviews(Array.isArray(data.reviews) ? data.reviews : []);
-        setPortfolioVideos(Array.isArray(data.portfolioVideos) ? data.portfolioVideos : []);
-        setPortfolioEnabled(Boolean(data.portfolioEnabled));
-      })
-      .catch(() => setToast("Não foi possível sincronizar os dados com a nuvem."));
+    Promise.all([
+      fetch("/api/auth/session", { cache: "no-store" }).then((r) => r.json()).catch(() => ({ authenticated: false })),
+      loadData().catch((error) => { setToast(`Não foi possível sincronizar os dados: ${error instanceof Error ? error.message : "falha desconhecida"}`); return {}; }),
+    ]).then(([session]) => {
+      const active = Boolean(session?.authenticated);
+      setLogged(active);
+      if (adminPath) {
+        if (active) { setArea("painel"); void loadData(); }
+        else setLoginOpen(true);
+      }
+    });
   }, []);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(""), 2600); return () => window.clearTimeout(timer) }, [toast]);
 
@@ -72,11 +76,20 @@ export default function HomePage() {
     return receipts.filter((item) => [item.customer, item.number, item.equipment, item.customerPhone].join(" ").toLowerCase().includes(term));
   }, [receipts, search]);
 
-  const showPanel = () => { setLoginOpen(false); setLogged(true); setArea("painel"); sessionStorage.setItem("resolve-session", "active") };
-  const handleLogin = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); const data = new FormData(event.currentTarget);
-    if (data.get("user") === "jorgemlr" && data.get("password") === "jorge160288") return showPanel();
-    setToast("Usuário ou senha incorretos.");
+  const showPanel = async () => { setLoginOpen(false); setLogged(true); setArea("painel"); await loadData().catch(() => undefined); };
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user: String(data.get("user") || ""), password: String(data.get("password") || "") }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Usuário ou senha incorretos.");
+      await showPanel();
+    } catch (error) { setToast(error instanceof Error ? error.message : "Não foi possível entrar."); }
   };
   const startReceipt = () => { setDraft({ ...emptyReceipt, warranty: company.warranty, createdAt: new Date().toISOString().slice(0, 10) }); setSelected(null); setPanelTab("novo") };
   const saveReceipt = async () => {
@@ -96,7 +109,7 @@ export default function HomePage() {
   };
   const editReceipt = (receipt: Receipt) => { setDraft(receipt); setSelected(receipt); setPanelTab("novo") };
   const duplicateReceipt = (receipt: Receipt) => { setDraft({ ...receipt, id: "", number: "", createdAt: new Date().toISOString().slice(0, 10) }); setSelected(null); setPanelTab("novo") };
-  const deleteReceipt = async (id: string) => { if (!window.confirm("Excluir este recibo?")) return; const next = receipts.filter((item) => item.id !== id); setReceipts(next); await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deleteReceipt", id }) }); setToast("Recibo excluído.") };
+  const deleteReceipt = async (id: string) => { if (!window.confirm("Excluir este recibo?")) return; try { const response = await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deleteReceipt", id }) }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload?.error || "Falha ao excluir"); setReceipts(receipts.filter((item) => item.id !== id)); setToast("Recibo excluído."); } catch (error) { setToast(error instanceof Error ? error.message : "Não foi possível excluir."); } };
   const saveCompany = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     try {
@@ -181,7 +194,7 @@ export default function HomePage() {
     void Promise.resolve(register).catch(() => undefined);
     return () => lifecycle.abort();
   }, [company.warranty, receipts]);
-  const logout = () => { sessionStorage.removeItem("resolve-session"); setLogged(false); window.location.href = "/" };
+  const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined); setLogged(false); window.location.href = "/" };
 
   if (area === "painel" && logged) return (
     <div className="app-shell">

@@ -1,11 +1,24 @@
 import { env } from "cloudflare:workers";
+import { isAdminRequest } from "@/lib/auth";
 
 export const runtime = "edge";
 
 type Bindings = { DB?: D1Database; MEDIA?: R2Bucket };
 const cf = env as unknown as Bindings;
 
-const defaultCompany = { brand: "Assistência Técnica Jorge Rodrigues", technician: "Jorge Rodrigues", document: "CPF/CNPJ: informe no painel", phone: "(21) 96927-8056", whatsapp: "5521969278056", address: "Rio de Janeiro - RJ", warranty: "90 dias", signatureSrc: "", signatureX: 50, signatureY: 82, signatureWidth: 28 };
+const defaultCompany = {
+  brand: "Assistência Técnica Jorge Rodrigues",
+  technician: "Jorge Rodrigues",
+  document: "CPF/CNPJ: informe no painel",
+  phone: "(21) 96927-8056",
+  whatsapp: "5521969278056",
+  address: "Rio de Janeiro - RJ",
+  warranty: "90 dias",
+  signatureSrc: "/assinatura-jorge-de-melo-rodrigues.png",
+  signatureX: 50,
+  signatureY: 82,
+  signatureWidth: 28,
+};
 
 function requireDB(): D1Database {
   if (!cf.DB) throw new Error("Binding DB não está conectado ao Worker");
@@ -24,6 +37,7 @@ async function ensureSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS reviews (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS portfolio (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS admin_sessions (token TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)"),
   ]);
 }
 
@@ -42,19 +56,23 @@ function jsonError(error: unknown) {
   return Response.json({ ok: false, error: message }, { status: 500 });
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     await ensureSchema();
     const db = requireDB();
-    const [companyRow, enabledRow, receiptsResult, reviewsResult, portfolioResult] = await Promise.all([
+    const admin = await isAdminRequest(request);
+    const [companyRow, enabledRow, reviewsResult, portfolioResult] = await Promise.all([
       db.prepare("SELECT value FROM kv WHERE key = 'company'").first<{ value: string }>(),
       db.prepare("SELECT value FROM kv WHERE key = 'portfolioEnabled'").first<{ value: string }>(),
-      db.prepare("SELECT data FROM receipts ORDER BY created_at DESC").all<{ data: string }>(),
       db.prepare("SELECT data FROM reviews ORDER BY created_at DESC").all<{ data: string }>(),
       db.prepare("SELECT data FROM portfolio ORDER BY created_at DESC").all<{ data: string }>(),
     ]);
+    const receiptsResult = admin
+      ? await db.prepare("SELECT data FROM receipts ORDER BY created_at DESC").all<{ data: string }>()
+      : { results: [] as { data: string }[] };
     return Response.json({
       ok: true,
+      authenticated: admin,
       company: companyRow?.value ? { ...defaultCompany, ...JSON.parse(companyRow.value) } : defaultCompany,
       portfolioEnabled: enabledRow?.value === "true",
       receipts: parseRows(receiptsResult.results),
@@ -70,15 +88,21 @@ export async function POST(request: Request) {
     const db = requireDB();
     const body = await request.json() as any;
     const action = String(body.action || "");
+    const publicAction = action === "addReview" || action === "quote";
+    if (!publicAction && !(await isAdminRequest(request))) {
+      return Response.json({ ok: false, error: "Sessão administrativa expirada. Entre novamente." }, { status: 401 });
+    }
 
     if (action === "saveCompany") {
-      await db.prepare("INSERT INTO kv (key,value) VALUES ('company',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(body.company)).run();
+      await db.prepare("INSERT INTO kv (key,value) VALUES ('company',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .bind(JSON.stringify({ ...defaultCompany, ...(body.company || {}) })).run();
       return Response.json({ ok: true });
     }
     if (action === "saveReceipt") {
       const item = body.receipt;
       if (!item?.id) return Response.json({ ok:false, error:"Recibo sem ID" }, { status:400 });
-      await db.prepare("INSERT INTO receipts (id,data,created_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at").bind(item.id, JSON.stringify(item), item.createdAt || new Date().toISOString()).run();
+      await db.prepare("INSERT INTO receipts (id,data,created_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at")
+        .bind(item.id, JSON.stringify(item), item.createdAt || new Date().toISOString()).run();
       return Response.json({ ok: true });
     }
     if (action === "deleteReceipt") {
@@ -87,7 +111,9 @@ export async function POST(request: Request) {
     }
     if (action === "addReview") {
       const review = body.review;
+      if (!review?.id) return Response.json({ ok:false, error:"Avaliação inválida" }, { status:400 });
       if (review?.photo?.startsWith("data:image/")) {
+        if (review.photo.length > 3_500_000) return Response.json({ ok:false, error:"Foto acima do limite permitido." }, { status:413 });
         const media = requireMedia();
         const match = review.photo.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
         if (match) {
@@ -98,7 +124,8 @@ export async function POST(request: Request) {
           review.photo = `/api/media?key=${encodeURIComponent(key)}`;
         }
       }
-      await db.prepare("INSERT INTO reviews (id,data,created_at) VALUES (?,?,?)").bind(review.id, JSON.stringify(review), review.createdAt).run();
+      await db.prepare("INSERT INTO reviews (id,data,created_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at")
+        .bind(review.id, JSON.stringify(review), review.createdAt || new Date().toISOString()).run();
       return Response.json({ ok: true, review });
     }
     if (action === "deleteReview") {
@@ -109,7 +136,9 @@ export async function POST(request: Request) {
     }
     if (action === "savePortfolio") {
       const item = body.video;
-      await db.prepare("INSERT INTO portfolio (id,data,created_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at").bind(item.id, JSON.stringify(item), item.createdAt).run();
+      if (!item?.id) return Response.json({ ok:false, error:"Vídeo inválido" }, { status:400 });
+      await db.prepare("INSERT INTO portfolio (id,data,created_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at")
+        .bind(item.id, JSON.stringify(item), item.createdAt || new Date().toISOString()).run();
       return Response.json({ ok: true });
     }
     if (action === "deletePortfolio") {
@@ -119,12 +148,14 @@ export async function POST(request: Request) {
       return Response.json({ ok: true });
     }
     if (action === "portfolioEnabled") {
-      await db.prepare("INSERT INTO kv (key,value) VALUES ('portfolioEnabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(Boolean(body.enabled))).run();
+      await db.prepare("INSERT INTO kv (key,value) VALUES ('portfolioEnabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .bind(String(Boolean(body.enabled))).run();
       return Response.json({ ok: true });
     }
     if (action === "quote") {
       const id = crypto.randomUUID();
-      await db.prepare("INSERT INTO quotes (id,data,created_at) VALUES (?,?,?)").bind(id, JSON.stringify(body.quote), new Date().toISOString()).run();
+      await db.prepare("INSERT INTO quotes (id,data,created_at) VALUES (?,?,?)")
+        .bind(id, JSON.stringify(body.quote || {}), new Date().toISOString()).run();
       return Response.json({ ok: true, id });
     }
     return Response.json({ ok: false, error: "Ação inválida" }, { status: 400 });

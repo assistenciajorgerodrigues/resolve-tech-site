@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { isAdminRequest } from "@/lib/auth";
 
 export const runtime = "edge";
 type Bindings = { MEDIA?: R2Bucket };
@@ -30,11 +31,14 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    if (!(await isAdminRequest(request))) return Response.json({ ok:false, error:"Sessão administrativa expirada." }, { status:401 });
     const form = await request.formData();
     const file = form.get("file");
     const id = String(form.get("id") || crypto.randomUUID());
     const kind = String(form.get("kind") || "portfolio");
     if (!(file instanceof File)) return Response.json({ ok: false, error: "Arquivo ausente" }, { status: 400 });
+    const max = kind === "signature" ? 5_000_000 : 100_000_000;
+    if (file.size > max) return Response.json({ ok:false, error:`Arquivo acima do limite de ${Math.round(max/1_000_000)} MB.` }, { status:413 });
     const safeName = file.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "arquivo";
     const key = `${kind}/${id}-${safeName}`;
     await media().put(key, file.stream(), { httpMetadata: { contentType: file.type || "application/octet-stream" }, customMetadata: { originalName: file.name } });
@@ -44,6 +48,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    if (!(await isAdminRequest(request))) return Response.json({ ok:false, error:"Sessão administrativa expirada." }, { status:401 });
     const key = new URL(request.url).searchParams.get("key");
     if (!key) return Response.json({ ok: false }, { status: 400 });
     await media().delete(key);
