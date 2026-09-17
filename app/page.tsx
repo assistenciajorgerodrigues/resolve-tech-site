@@ -43,17 +43,20 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
 
   useEffect(() => {
-    const savedCompany = localStorage.getItem("resolve-company");
-    const savedReceipts = localStorage.getItem("resolve-receipts");
-    const savedReviews = localStorage.getItem("resolve-reviews");
-    const savedPortfolio = localStorage.getItem("resolve-portfolio-videos");
-    const savedPortfolioEnabled = localStorage.getItem("resolve-portfolio-enabled");
-    if (savedCompany) setCompany(JSON.parse(savedCompany));
-    if (savedReceipts) setReceipts(JSON.parse(savedReceipts));
-    if (savedReviews) setReviews(JSON.parse(savedReviews));
-    if (savedPortfolio) setPortfolioVideos(JSON.parse(savedPortfolio));
-    if (savedPortfolioEnabled) setPortfolioEnabled(savedPortfolioEnabled === "true");
     if (sessionStorage.getItem("resolve-session") === "active") setLogged(true);
+    fetch("/api/data", { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Falha ao carregar dados");
+        return response.json();
+      })
+      .then((data) => {
+        setCompany(data.company || defaultCompany);
+        setReceipts(Array.isArray(data.receipts) ? data.receipts : []);
+        setReviews(Array.isArray(data.reviews) ? data.reviews : []);
+        setPortfolioVideos(Array.isArray(data.portfolioVideos) ? data.portfolioVideos : []);
+        setPortfolioEnabled(Boolean(data.portfolioEnabled));
+      })
+      .catch(() => setToast("Não foi possível sincronizar os dados com a nuvem."));
   }, []);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(""), 2600); return () => window.clearTimeout(timer) }, [toast]);
 
@@ -70,47 +73,73 @@ export default function HomePage() {
     setToast("Login incorreto. Use admin e 1234 para testar.");
   };
   const startReceipt = () => { setDraft({ ...emptyReceipt, warranty: company.warranty, createdAt: new Date().toISOString().slice(0, 10) }); setSelected(null); setPanelTab("novo") };
-  const saveReceipt = () => {
+  const saveReceipt = async () => {
     if (!draft.customer || !draft.equipment || !draft.service) return setToast("Preencha cliente, equipamento e serviço realizado.");
     const editing = Boolean(draft.id);
     const finalReceipt: Receipt = editing ? draft : { ...draft, id: crypto.randomUUID(), number: `RT-${new Date().getFullYear()}-${String(receipts.length + 1).padStart(4, "0")}` };
     const next = editing ? receipts.map((item) => item.id === finalReceipt.id ? finalReceipt : item) : [finalReceipt, ...receipts];
-    setReceipts(next); localStorage.setItem("resolve-receipts", JSON.stringify(next)); setSelected(finalReceipt); setDraft(finalReceipt); setToast(editing ? "Recibo atualizado." : "Recibo criado e salvo.");
+    setReceipts(next); setSelected(finalReceipt); setDraft(finalReceipt);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "saveReceipt", receipt: finalReceipt }) });
+      if (!response.ok) throw new Error();
+      setToast(editing ? "Recibo atualizado e sincronizado." : "Recibo criado e salvo na nuvem.");
+    } catch {
+      setToast("Recibo ficou na tela, mas não foi possível salvar no banco.");
+    }
   };
   const editReceipt = (receipt: Receipt) => { setDraft(receipt); setSelected(receipt); setPanelTab("novo") };
   const duplicateReceipt = (receipt: Receipt) => { setDraft({ ...receipt, id: "", number: "", createdAt: new Date().toISOString().slice(0, 10) }); setSelected(null); setPanelTab("novo") };
-  const deleteReceipt = (id: string) => { if (!window.confirm("Excluir este recibo?")) return; const next = receipts.filter((item) => item.id !== id); setReceipts(next); localStorage.setItem("resolve-receipts", JSON.stringify(next)); setToast("Recibo excluído.") };
-  const saveCompany = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); localStorage.setItem("resolve-company", JSON.stringify(company)); setToast("Dados da empresa atualizados.") };
-  const addReview = (review: Omit<Review, "id" | "createdAt">) => {
+  const deleteReceipt = async (id: string) => { if (!window.confirm("Excluir este recibo?")) return; const next = receipts.filter((item) => item.id !== id); setReceipts(next); await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deleteReceipt", id }) }); setToast("Recibo excluído.") };
+  const saveCompany = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const response = await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"saveCompany", company }) }); setToast(response.ok ? "Dados da empresa atualizados e sincronizados." : "Não foi possível salvar os dados da empresa.") };
+  const addReview = async (review: Omit<Review, "id" | "createdAt">) => {
     const created: Review = { ...review, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    const next = [created, ...reviews];
-    setReviews(next); localStorage.setItem("resolve-reviews", JSON.stringify(next)); setToast("Avaliação enviada. Obrigado!");
+    try {
+      const response = await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"addReview", review:created }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error();
+      setReviews((current) => [data.review as Review, ...current]);
+      setToast("Avaliação enviada. Obrigado!");
+    } catch { setToast("Não foi possível enviar a avaliação."); }
   };
-  const deleteReview = (id: string) => {
+  const deleteReview = async (id: string) => {
     const next = reviews.filter((review) => review.id !== id);
-    setReviews(next); localStorage.setItem("resolve-reviews", JSON.stringify(next)); setToast("Avaliação removida.");
+    setReviews(next); await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deleteReview", id }) }); setToast("Avaliação removida.");
   };
-  const savePortfolio = (next: PortfolioVideo[]) => { setPortfolioVideos(next); localStorage.setItem("resolve-portfolio-videos", JSON.stringify(next)); };
-  const addPortfolioUrl = (title: string, src: string) => {
+  const savePortfolioVideo = async (video: PortfolioVideo) => {
+    await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"savePortfolio", video }) });
+  };
+  const addPortfolioUrl = async (title: string, src: string) => {
     if (!src.trim()) return setToast("Informe o link do vídeo.");
     const created: PortfolioVideo = { id: crypto.randomUUID(), title: title.trim() || "Serviço realizado", sourceType: "url", src: src.trim(), visible: true, createdAt: new Date().toISOString() };
-    savePortfolio([created, ...portfolioVideos]); setToast("Vídeo adicionado ao portfólio.");
+    setPortfolioVideos((current) => [created, ...current]); await savePortfolioVideo(created); setToast("Vídeo adicionado ao portfólio.");
   };
   const addPortfolioFile = async (title: string, file?: File) => {
     if (!file) return;
     if (!file.type.startsWith("video/")) return setToast("Selecione um arquivo de vídeo.");
     const id = crypto.randomUUID();
-    try { await saveVideoBlob(id, file); } catch { return setToast("Não foi possível salvar este vídeo no navegador."); }
-    const created: PortfolioVideo = { id, title: title.trim() || file.name.replace(/\.[^.]+$/, ""), sourceType: "file", src: "", visible: true, createdAt: new Date().toISOString() };
-    savePortfolio([created, ...portfolioVideos]); setToast("Vídeo enviado e adicionado ao portfólio.");
+    try {
+      const form = new FormData(); form.append("file", file); form.append("id", id); form.append("kind", "portfolio");
+      const upload = await fetch("/api/media", { method:"POST", body:form });
+      const uploaded = await upload.json();
+      if (!upload.ok) throw new Error();
+      const created: PortfolioVideo = { id, title: title.trim() || file.name.replace(/\.[^.]+$/, ""), sourceType: "file", src: uploaded.src, visible: true, createdAt: new Date().toISOString() };
+      setPortfolioVideos((current) => [created, ...current]); await savePortfolioVideo(created); setToast("Vídeo enviado para a nuvem e adicionado ao portfólio.");
+    } catch { setToast("Não foi possível enviar este vídeo para o armazenamento."); }
   };
-  const togglePortfolioVideo = (id: string) => savePortfolio(portfolioVideos.map((video) => video.id === id ? { ...video, visible: !video.visible } : video));
+  const togglePortfolioVideo = async (id: string) => {
+    const updated = portfolioVideos.find((video) => video.id === id);
+    if (!updated) return;
+    const nextVideo = { ...updated, visible: !updated.visible };
+    setPortfolioVideos(portfolioVideos.map((video) => video.id === id ? nextVideo : video));
+    await savePortfolioVideo(nextVideo);
+  };
   const deletePortfolioVideo = async (id: string) => {
     if (!window.confirm("Excluir este vídeo do portfólio?")) return;
-    try { await deleteVideoBlob(id); } catch {}
-    savePortfolio(portfolioVideos.filter((video) => video.id !== id)); setToast("Vídeo removido.");
+    setPortfolioVideos(portfolioVideos.filter((video) => video.id !== id));
+    await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deletePortfolio", id }) });
+    setToast("Vídeo removido.");
   };
-  const togglePortfolioEnabled = (enabled: boolean) => { setPortfolioEnabled(enabled); localStorage.setItem("resolve-portfolio-enabled", String(enabled)); setToast(enabled ? "Portfólio ativado no site." : "Portfólio ocultado do site."); };
+  const togglePortfolioEnabled = async (enabled: boolean) => { setPortfolioEnabled(enabled); await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"portfolioEnabled", enabled }) }); setToast(enabled ? "Portfólio ativado no site." : "Portfólio ocultado do site."); };
   useEffect(() => {
     type ToolInput = { customer?: string; equipment?: string; service?: string; total?: string };
     type ToolHost = { registerTool?: (tool: { name: string; title: string; description: string; inputSchema: object; annotations: object; execute: (input: ToolInput) => object }, options: { signal: AbortSignal }) => void | Promise<void> };
@@ -127,7 +156,8 @@ export default function HomePage() {
         if (!input.customer?.trim() || !input.equipment?.trim() || !input.service?.trim()) throw new Error("Cliente, equipamento e serviço são obrigatórios.");
         const created: Receipt = { ...emptyReceipt, id: crypto.randomUUID(), number: `RT-${new Date().getFullYear()}-${String(receipts.length + 1).padStart(4, "0")}`, createdAt: new Date().toISOString().slice(0, 10), customer: input.customer.trim(), equipment: input.equipment.trim(), service: input.service.trim(), total: input.total?.trim() || "0,00", warranty: company.warranty };
         const next = [created, ...receipts];
-        setReceipts(next); localStorage.setItem("resolve-receipts", JSON.stringify(next)); setDraft(created); setSelected(created); setPanelTab("novo"); setArea("painel"); setLogged(true);
+        setReceipts(next); setDraft(created); setSelected(created); setPanelTab("novo"); setArea("painel"); setLogged(true);
+        void fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"saveReceipt", receipt:created }) });
         return { id: created.id, number: created.number, saved: true };
       },
     }, { signal: lifecycle.signal });
@@ -195,18 +225,10 @@ function ReviewsSection({ reviews, onAdd }: { reviews: Review[]; onAdd: (review:
   return <section id="avaliacoes" className="reviews-section"><div className="section-intro"><span className="eyebrow">EXPERIÊNCIA DOS CLIENTES</span><h2>Avaliações de quem já foi atendido</h2><p>Deixe sua avaliação, escolha de 1 a 5 estrelas e, se quiser, adicione sua foto.</p></div><div className="reviews-layout"><div className="reviews-list">{reviews.length === 0 ? <div className="reviews-empty"><Star /><h3>As primeiras avaliações aparecerão aqui.</h3><p>O formulário já está pronto para receber foto, comentário e nota.</p></div> : reviews.slice(0,6).map((review) => <article className="review-card" key={review.id}><div className="review-head"><ReviewAvatar review={review} /><div><strong>{review.name}</strong><Stars value={review.rating} /></div></div><p>“{review.text}”</p></article>)}</div><form className="review-form" onSubmit={submit}><span className="eyebrow">DEIXE SUA AVALIAÇÃO</span><h3>Como foi seu atendimento?</h3><Field label="Seu nome"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome" required /></Field><div className="rating-field"><span>Sua nota</span><Stars value={rating} onChange={setRating} /></div><Field label="Sua avaliação"><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Conte como foi o atendimento" required /></Field><label className="photo-upload"><input type="file" accept="image/*" onChange={(e) => pickPhoto(e.target.files?.[0])} /><span className="upload-preview">{photo ? <img src={photo} alt="Prévia da foto" /> : <Upload />}</span><div><strong>{photo ? "Foto selecionada" : "Adicionar uma foto"}</strong><small>Opcional · JPG ou PNG</small></div></label><button className="primary-button full" type="submit"><Star /> Enviar avaliação</button></form></div></section>
 }
 
-const VIDEO_DB = "resolve-tech-media";
-const VIDEO_STORE = "videos";
-function openVideoDb(): Promise<IDBDatabase> { return new Promise((resolve, reject) => { const req = indexedDB.open(VIDEO_DB, 1); req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(VIDEO_STORE)) req.result.createObjectStore(VIDEO_STORE); }; req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); }); }
-async function saveVideoBlob(id: string, file: File) { const db = await openVideoDb(); await new Promise<void>((resolve, reject) => { const tx = db.transaction(VIDEO_STORE, "readwrite"); tx.objectStore(VIDEO_STORE).put(file, id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); db.close(); }
-async function loadVideoBlob(id: string): Promise<Blob | null> { const db = await openVideoDb(); const blob = await new Promise<Blob | null>((resolve, reject) => { const tx = db.transaction(VIDEO_STORE, "readonly"); const req = tx.objectStore(VIDEO_STORE).get(id); req.onsuccess = () => resolve(req.result || null); req.onerror = () => reject(req.error); }); db.close(); return blob; }
-async function deleteVideoBlob(id: string) { const db = await openVideoDb(); await new Promise<void>((resolve, reject) => { const tx = db.transaction(VIDEO_STORE, "readwrite"); tx.objectStore(VIDEO_STORE).delete(id); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); db.close(); }
 function PortfolioVideoPlayer({ video, compact = false }: { video: PortfolioVideo; compact?: boolean }) {
-  const [src, setSrc] = useState(video.sourceType === "url" ? video.src : "");
   const [shape, setShape] = useState<"portrait" | "square" | "landscape">("landscape");
-  useEffect(() => { let objectUrl = ""; if (video.sourceType === "url") { setSrc(video.src); return; } loadVideoBlob(video.id).then((blob) => { if (!blob) return; objectUrl = URL.createObjectURL(blob); setSrc(objectUrl); }).catch(() => undefined); return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); }; }, [video.id, video.sourceType, video.src]);
   const metadata = (event: React.SyntheticEvent<HTMLVideoElement>) => { const el = event.currentTarget; if (!el.videoWidth || !el.videoHeight) return; const ratio = el.videoWidth / el.videoHeight; setShape(ratio > 1.2 ? "landscape" : ratio < .82 ? "portrait" : "square"); };
-  return <div className={`portfolio-video-card ${shape} ${compact ? "compact" : ""}`}><div className="portfolio-video-frame">{src ? <video src={src} controls playsInline preload="metadata" onLoadedMetadata={metadata}>Seu navegador não conseguiu reproduzir este formato de vídeo.</video> : <div className="video-missing"><Video /><span>Vídeo disponível somente no navegador onde foi enviado.</span></div>}</div>{!compact && <div className="portfolio-video-caption"><PlayCircle /><strong>{video.title}</strong></div>}</div>;
+  return <div className={`portfolio-video-card ${shape} ${compact ? "compact" : ""}`}><div className="portfolio-video-frame">{video.src ? <video src={video.src} controls playsInline preload="metadata" onLoadedMetadata={metadata}>Seu navegador não conseguiu reproduzir este formato de vídeo.</video> : <div className="video-missing"><Video /><span>Vídeo indisponível.</span></div>}</div>{!compact && <div className="portfolio-video-caption"><PlayCircle /><strong>{video.title}</strong></div>}</div>;
 }
 function PortfolioSection({ videos }: { videos: PortfolioVideo[] }) { return <section id="portfolio" className="portfolio-section"><div className="section-intro"><span className="eyebrow">SERVIÇOS NA PRÁTICA</span><h2>Veja alguns trabalhos realizados</h2><p>Vídeos reais do atendimento e dos equipamentos. Cada mídia se adapta automaticamente ao formato original, sem distorção.</p></div><div className="portfolio-grid">{videos.map((video) => <PortfolioVideoPlayer key={video.id} video={video} />)}</div></section> }
 function PortfolioAdmin({ enabled, videos, onEnabledChange, onAddUrl, onAddFile, onToggleVideo, onDeleteVideo }: { enabled: boolean; videos: PortfolioVideo[]; onEnabledChange: (enabled:boolean)=>void; onAddUrl:(title:string,src:string)=>void; onAddFile:(title:string,file?:File)=>void; onToggleVideo:(id:string)=>void; onDeleteVideo:(id:string)=>void }) {
@@ -219,7 +241,7 @@ function PortfolioAdmin({ enabled, videos, onEnabledChange, onAddUrl, onAddFile,
 function QuoteSection({ company }: { company: Company }) {
   const [form, setForm] = useState({ name:"", phone:"", equipment:"", problem:"", wantsVisit:true, address:"", date:"", time:"" });
   const set = (key: keyof typeof form, value: string | boolean) => setForm({ ...form, [key]: value });
-  const submit = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const visit = form.wantsVisit ? `Sim. Endereço/local: ${form.address || "a combinar"}. Data preferida: ${form.date || "a combinar"} ${form.time || ""}.` : "Ainda não quero agendar visita, desejo uma orientação inicial."; let calendar = ""; if (form.wantsVisit && form.date && form.time) { const start = `${form.date.replace(/-/g,"")}T${form.time.replace(":","")}00`; const [h,m] = form.time.split(":").map(Number); const endDate = new Date(`${form.date}T${form.time}:00`); endDate.setMinutes(endDate.getMinutes()+60); const end = `${endDate.getFullYear()}${String(endDate.getMonth()+1).padStart(2,"0")}${String(endDate.getDate()).padStart(2,"0")}T${String(endDate.getHours()).padStart(2,"0")}${String(endDate.getMinutes()).padStart(2,"0")}00`; const params = new URLSearchParams({ action:"TEMPLATE", text:`Visita ${company.brand} - ${form.name}`, dates:`${start}/${end}`, details:`Cliente: ${form.name}\nTelefone: ${form.phone}\nEquipamento: ${form.equipment}\nProblema: ${form.problem}`, location:form.address || "Rio de Janeiro - RJ" }); calendar = `\n\n📅 Link para adicionar esta visita ao Google Agenda: https://calendar.google.com/calendar/render?${params.toString()}`; } const message = `Olá! Gostaria de solicitar uma avaliação/orçamento.\n\nNome: ${form.name}\nTelefone: ${form.phone}\nEquipamento: ${form.equipment}\nProblema/defeito: ${form.problem}\nVisita técnica: ${visit}${calendar}`; window.open(whatsappLink(company.whatsapp, message), "_blank") };
+  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const visit = form.wantsVisit ? `Sim. Endereço/local: ${form.address || "a combinar"}. Data preferida: ${form.date || "a combinar"} ${form.time || ""}.` : "Ainda não quero agendar visita, desejo uma orientação inicial."; let calendar = ""; if (form.wantsVisit && form.date && form.time) { const start = `${form.date.replace(/-/g,"")}T${form.time.replace(":","")}00`; const endDate = new Date(`${form.date}T${form.time}:00`); endDate.setMinutes(endDate.getMinutes()+60); const end = `${endDate.getFullYear()}${String(endDate.getMonth()+1).padStart(2,"0")}${String(endDate.getDate()).padStart(2,"0")}T${String(endDate.getHours()).padStart(2,"0")}${String(endDate.getMinutes()).padStart(2,"0")}00`; const params = new URLSearchParams({ action:"TEMPLATE", text:`Visita ${company.brand} - ${form.name}`, dates:`${start}/${end}`, details:`Cliente: ${form.name}\nTelefone: ${form.phone}\nEquipamento: ${form.equipment}\nProblema: ${form.problem}`, location:form.address || "Rio de Janeiro - RJ" }); calendar = `\n\n📅 Link para adicionar esta visita ao Google Agenda: https://calendar.google.com/calendar/render?${params.toString()}`; } const message = `Olá! Gostaria de solicitar uma avaliação/orçamento.\n\nNome: ${form.name}\nTelefone: ${form.phone}\nEquipamento: ${form.equipment}\nProblema/defeito: ${form.problem}\nVisita técnica: ${visit}${calendar}`; void fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"quote", quote:{ ...form, createdAt:new Date().toISOString() } }) }); window.open(whatsappLink(company.whatsapp, message), "_blank") };
   return <section id="orcamento" className="quote-section"><div className="quote-copy"><span className="eyebrow light">PRÉ-ATENDIMENTO</span><h2>Conte o defeito antes da visita.</h2><p>Você já adianta as informações principais e o técnico recebe tudo organizado no WhatsApp para orientar o atendimento.</p><div className="visit-note"><MapPin /><div><strong>Atendimento por visita agendada</strong><span>Informe o aparelho, o defeito e, se quiser, uma data preferida.</span></div></div></div><form className="quote-form" onSubmit={submit}><div className="form-grid"><Field label="Seu nome"><input value={form.name} onChange={(e)=>set("name",e.target.value)} placeholder="Nome completo" required /></Field><Field label="WhatsApp"><input value={form.phone} onChange={(e)=>set("phone",e.target.value)} placeholder="(21) 99999-9999" required /></Field><Field label="Qual é o aparelho?"><input value={form.equipment} onChange={(e)=>set("equipment",e.target.value)} placeholder="Ex.: máquina de lavar, TV..." required /></Field><Field label="Qual é o problema?" wide><textarea value={form.problem} onChange={(e)=>set("problem",e.target.value)} placeholder="Explique o defeito, ruído, mensagem de erro ou o que deixou de funcionar" required /></Field></div><label className="visit-toggle"><input type="checkbox" checked={form.wantsVisit} onChange={(e)=>set("wantsVisit",e.target.checked)} /><span><strong>Quero solicitar uma visita técnica</strong><small>O horário só é confirmado após o técnico responder.</small></span></label>{form.wantsVisit && <div className="visit-fields"><Field label="Endereço / bairro"><input value={form.address} onChange={(e)=>set("address",e.target.value)} placeholder="Bairro ou endereço da visita" /></Field><Field label="Data preferida"><input type="date" value={form.date} onChange={(e)=>set("date",e.target.value)} /></Field><Field label="Horário preferido"><input type="time" value={form.time} onChange={(e)=>set("time",e.target.value)} /></Field></div>}<button className="primary-button full quote-submit" type="submit"><Send /> Enviar pré-atendimento pelo WhatsApp</button><p className="form-footnote"><CalendarDays /> Se informar data e horário, a mensagem também leva um link para o técnico adicionar a visita ao Google Agenda.</p></form></section>
 }
 function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "field wide" : "field"}><span>{label}</span>{children}</label> }
