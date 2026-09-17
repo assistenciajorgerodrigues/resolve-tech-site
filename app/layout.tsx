@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Resolve Tech | Assistência técnica",
-  description: "Assistência técnica com diagnóstico claro, atendimento cuidadoso e garantia no serviço.",
+  title: "Assistência Técnica Jorge Rodrigues",
+  description: "Assistência Técnica Jorge Rodrigues — atendimento técnico com diagnóstico claro, visita agendada e garantia no serviço.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 

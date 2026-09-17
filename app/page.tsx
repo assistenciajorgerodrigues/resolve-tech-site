@@ -9,12 +9,12 @@ import {
   CalendarDays, MapPin, Send, Upload, Video, Eye, EyeOff, PlayCircle,
 } from "lucide-react";
 
-type Company = { brand: string; technician: string; document: string; phone: string; whatsapp: string; address: string; warranty: string };
+type Company = { brand: string; technician: string; document: string; phone: string; whatsapp: string; address: string; warranty: string; signatureSrc: string; signatureX: number; signatureY: number; signatureWidth: number };
 type Receipt = { id: string; number: string; createdAt: string; customer: string; customerPhone: string; equipment: string; brandModel: string; serial: string; problem: string; service: string; parts: string; labor: string; total: string; payment: string; warranty: string; notes: string; status: "Concluído" | "Em andamento" };
 type Review = { id: string; name: string; text: string; rating: number; photo: string; createdAt: string };
 type PortfolioVideo = { id: string; title: string; sourceType: "url" | "file"; src: string; visible: boolean; createdAt: string };
 
-const defaultCompany: Company = { brand: "Resolve Tech", technician: "Técnico responsável", document: "CPF/CNPJ: informe no painel", phone: "(21) 99999-9999", whatsapp: "5521999999999", address: "Rio de Janeiro - RJ", warranty: "90 dias" };
+const defaultCompany: Company = { brand: "Assistência Técnica Jorge Rodrigues", technician: "Jorge Rodrigues", document: "CPF/CNPJ: informe no painel", phone: "(21) 96927-8056", whatsapp: "5521969278056", address: "Rio de Janeiro - RJ", warranty: "90 dias", signatureSrc: "", signatureX: 50, signatureY: 82, signatureWidth: 28 };
 const emptyReceipt: Receipt = { id: "", number: "", createdAt: new Date().toISOString().slice(0, 10), customer: "", customerPhone: "", equipment: "", brandModel: "", serial: "", problem: "", service: "", parts: "0,00", labor: "0,00", total: "0,00", payment: "Pix", warranty: "90 dias", notes: "", status: "Concluído" };
 const services = [
   { icon: WashingMachine, title: "Eletrodomésticos", text: "Diagnóstico e reparo com cuidado em cada detalhe." },
@@ -43,14 +43,20 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
 
   useEffect(() => {
-    if (sessionStorage.getItem("resolve-session") === "active") setLogged(true);
+    const adminPath = window.location.pathname === "/admin" || window.location.pathname.startsWith("/admin/");
+    const sessionActive = sessionStorage.getItem("resolve-session") === "active";
+    if (sessionActive) setLogged(true);
+    if (adminPath) {
+      if (sessionActive) setArea("painel");
+      else setLoginOpen(true);
+    }
     fetch("/api/data", { cache: "no-store" })
       .then((response) => {
         if (!response.ok) throw new Error("Falha ao carregar dados");
         return response.json();
       })
       .then((data) => {
-        setCompany(data.company || defaultCompany);
+        setCompany({ ...defaultCompany, ...(data.company || {}) });
         setReceipts(Array.isArray(data.receipts) ? data.receipts : []);
         setReviews(Array.isArray(data.reviews) ? data.reviews : []);
         setPortfolioVideos(Array.isArray(data.portfolioVideos) ? data.portfolioVideos : []);
@@ -81,16 +87,27 @@ export default function HomePage() {
     setReceipts(next); setSelected(finalReceipt); setDraft(finalReceipt);
     try {
       const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "saveReceipt", receipt: finalReceipt }) });
-      if (!response.ok) throw new Error();
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Falha ao gravar no D1");
       setToast(editing ? "Recibo atualizado e sincronizado." : "Recibo criado e salvo na nuvem.");
-    } catch {
-      setToast("Recibo ficou na tela, mas não foi possível salvar no banco.");
+    } catch (error) {
+      setToast(`Não foi possível salvar no banco: ${error instanceof Error ? error.message : "falha desconhecida"}`);
     }
   };
   const editReceipt = (receipt: Receipt) => { setDraft(receipt); setSelected(receipt); setPanelTab("novo") };
   const duplicateReceipt = (receipt: Receipt) => { setDraft({ ...receipt, id: "", number: "", createdAt: new Date().toISOString().slice(0, 10) }); setSelected(null); setPanelTab("novo") };
   const deleteReceipt = async (id: string) => { if (!window.confirm("Excluir este recibo?")) return; const next = receipts.filter((item) => item.id !== id); setReceipts(next); await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"deleteReceipt", id }) }); setToast("Recibo excluído.") };
-  const saveCompany = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const response = await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"saveCompany", company }) }); setToast(response.ok ? "Dados da empresa atualizados e sincronizados." : "Não foi possível salvar os dados da empresa.") };
+  const saveCompany = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    try {
+      const response = await fetch("/api/data", { method:"POST", headers:{ "content-type":"application/json" }, body:JSON.stringify({ action:"saveCompany", company }) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Falha ao salvar");
+      setToast("Dados da empresa atualizados e salvos no banco.");
+    } catch (error) {
+      setToast(`Erro ao salvar no banco: ${error instanceof Error ? error.message : "falha desconhecida"}`);
+    }
+  };
   const addReview = async (review: Omit<Review, "id" | "createdAt">) => {
     const created: Review = { ...review, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
     try {
@@ -164,7 +181,7 @@ export default function HomePage() {
     void Promise.resolve(register).catch(() => undefined);
     return () => lifecycle.abort();
   }, [company.warranty, receipts]);
-  const logout = () => { sessionStorage.removeItem("resolve-session"); setLogged(false); setArea("site") };
+  const logout = () => { sessionStorage.removeItem("resolve-session"); setLogged(false); window.location.href = "/" };
 
   if (area === "painel" && logged) return (
     <div className="app-shell">
@@ -178,7 +195,7 @@ export default function HomePage() {
           <PanelButton active={panelTab === "portfolio"} icon={Video} label="Portfólio" onClick={() => setPanelTab("portfolio")} />
           <PanelButton active={panelTab === "config"} icon={Settings} label="Dados da empresa" onClick={() => setPanelTab("config")} />
         </nav>
-        <button className="sidebar-back" onClick={() => { setArea("site"); setMobileOpen(false) }}><ChevronRight className="rotate-180" /> Ver site</button>
+        <button className="sidebar-back" onClick={() => { window.location.href = "/" }}><ChevronRight className="rotate-180" /> Ver site</button>
         <button className="sidebar-logout" onClick={logout}><LogOut /> Sair</button>
       </aside>
       {mobileOpen && <button aria-label="Fechar menu" className="sidebar-scrim" onClick={() => setMobileOpen(false)} />}
@@ -189,14 +206,14 @@ export default function HomePage() {
         {panelTab === "historico" && <section className="panel-section"><div className="section-toolbar"><div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar cliente, número ou aparelho" /></div><button className="primary-button compact" onClick={startReceipt}><Plus /> Novo recibo</button></div><div className="history-card">{filteredReceipts.length === 0 ? <div className="empty-state"><ReceiptText /><h3>Nenhum recibo por aqui</h3><p>Crie o primeiro recibo e ele aparecerá salvo neste histórico.</p><button className="primary-button" onClick={startReceipt}>Criar recibo</button></div> : filteredReceipts.map((receipt) => <article className="history-row" key={receipt.id}><div className="file-icon"><FileText /></div><div className="history-main"><strong>{receipt.customer}</strong><span>{receipt.number} · {receipt.equipment}</span></div><span className="status-pill"><CheckCircle2 /> {receipt.status}</span><strong className="history-total">{BRL(receipt.total)}</strong><div className="row-actions"><button title="Editar" onClick={() => editReceipt(receipt)}><Pencil /></button><button title="Duplicar" onClick={() => duplicateReceipt(receipt)}><Download /></button><button title="Imprimir" onClick={() => { setSelected(receipt); setDraft(receipt); setPanelTab("novo"); setTimeout(() => window.print(), 180) }}><Printer /></button><button title="Enviar pelo WhatsApp" disabled={!digits(receipt.customerPhone)} onClick={() => window.open(whatsappLink(receipt.customerPhone, receiptWhatsappMessage(company, receipt)), "_blank")}><MessageCircle /></button><button title="Excluir" className="danger" onClick={() => deleteReceipt(receipt.id)}><Trash2 /></button></div></article>)}</div></section>}
         {panelTab === "avaliacoes" && <section className="panel-section"><div className="history-card reviews-admin">{reviews.length === 0 ? <div className="empty-state"><Star /><h3>Nenhuma avaliação ainda</h3><p>As avaliações enviadas pelo formulário do site aparecerão aqui.</p></div> : reviews.map((review) => <article className="review-admin-row" key={review.id}><ReviewAvatar review={review} /><div className="review-admin-copy"><strong>{review.name}</strong><Stars value={review.rating} /><p>{review.text}</p></div><button className="review-delete" title="Excluir avaliação" onClick={() => deleteReview(review.id)}><Trash2 /></button></article>)}</div></section>}
         {panelTab === "portfolio" && <PortfolioAdmin enabled={portfolioEnabled} videos={portfolioVideos} onEnabledChange={togglePortfolioEnabled} onAddUrl={addPortfolioUrl} onAddFile={addPortfolioFile} onToggleVideo={togglePortfolioVideo} onDeleteVideo={deletePortfolioVideo} />}
-        {panelTab === "config" && <section className="panel-section settings-wrap"><form className="settings-card" onSubmit={saveCompany}><div className="card-heading"><div><span className="eyebrow">PERSONALIZAÇÃO</span><h2>Informações automáticas do recibo</h2></div><Settings /></div><div className="form-grid"><Field label="Nome da empresa"><input value={company.brand} onChange={(e) => setCompany({ ...company, brand: e.target.value })} /></Field><Field label="Técnico responsável"><input value={company.technician} onChange={(e) => setCompany({ ...company, technician: e.target.value })} /></Field><Field label="CPF ou CNPJ"><input value={company.document} onChange={(e) => setCompany({ ...company, document: e.target.value })} /></Field><Field label="Telefone"><input value={company.phone} onChange={(e) => setCompany({ ...company, phone: e.target.value })} /></Field><Field label="WhatsApp com DDD"><input value={company.whatsapp} onChange={(e) => setCompany({ ...company, whatsapp: e.target.value.replace(/\D/g, "") })} /></Field><Field label="Garantia padrão"><input value={company.warranty} onChange={(e) => setCompany({ ...company, warranty: e.target.value })} /></Field><Field label="Endereço" wide><input value={company.address} onChange={(e) => setCompany({ ...company, address: e.target.value })} /></Field></div><button className="primary-button" type="submit"><BadgeCheck /> Salvar alterações</button></form></section>}
+        {panelTab === "config" && <section className="panel-section settings-wrap"><form className="settings-card" onSubmit={saveCompany}><div className="card-heading"><div><span className="eyebrow">PERSONALIZAÇÃO</span><h2>Informações automáticas dos documentos</h2></div><Settings /></div><div className="form-grid"><Field label="Nome da empresa"><input value={company.brand} onChange={(e) => setCompany({ ...company, brand: e.target.value })} /></Field><Field label="Técnico responsável"><input value={company.technician} onChange={(e) => setCompany({ ...company, technician: e.target.value })} /></Field><Field label="CPF ou CNPJ"><input value={company.document} onChange={(e) => setCompany({ ...company, document: e.target.value })} /></Field><Field label="Telefone"><input value={company.phone} onChange={(e) => setCompany({ ...company, phone: e.target.value })} /></Field><Field label="WhatsApp com DDD"><input value={company.whatsapp} onChange={(e) => setCompany({ ...company, whatsapp: e.target.value.replace(/\D/g, "") })} /></Field><Field label="Garantia padrão"><input value={company.warranty} onChange={(e) => setCompany({ ...company, warranty: e.target.value })} /></Field><Field label="Endereço" wide><input value={company.address} onChange={(e) => setCompany({ ...company, address: e.target.value })} /></Field></div><SignatureConfigurator company={company} setCompany={setCompany} /><button className="primary-button" type="submit"><BadgeCheck /> Salvar alterações</button></form></section>}
       </main>
       {toast && <div className="toast"><CheckCircle2 />{toast}</div>}
     </div>
   );
 
   return <main className="public-site">
-    <header className="site-header"><a className="brand" href="#inicio"><LogoMark /><div><strong>{company.brand}</strong><span>Assistência técnica</span></div></a><nav><a href="#servicos">Serviços</a><a href="#como-funciona">Como funciona</a>{portfolioEnabled && portfolioVideos.some((video) => video.visible) && <a href="#portfolio">Portfólio</a>}<a href="#orcamento">Orçamento</a><a href="#avaliacoes">Avaliações</a></nav><button className="member-button" onClick={() => logged ? setArea("painel") : setLoginOpen(true)}><ShieldCheck /> Área do técnico</button></header>
+    <header className="site-header"><a className="brand" href="#inicio"><LogoMark /><div><strong>{company.brand}</strong><span>Assistência técnica</span></div></a><nav><a href="#servicos">Serviços</a><a href="#como-funciona">Como funciona</a>{portfolioEnabled && portfolioVideos.some((video) => video.visible) && <a href="#portfolio">Portfólio</a>}<a href="#orcamento">Orçamento</a><a href="#avaliacoes">Avaliações</a></nav><a className="member-button" href="/admin"><ShieldCheck /> Área do técnico</a></header>
     <section id="inicio" className="hero"><div className="hero-glow" /><div className="hero-copy"><span className="hero-kicker"><Sparkles /> Atendimento que resolve de verdade</span><h1>Seu aparelho funcionando. <em>Seu dia de volta.</em></h1><p>Assistência técnica com diagnóstico claro, atendimento cuidadoso e garantia no serviço. Atendimento realizado por visita agendada no local.</p><div className="hero-actions"><a className="primary-button hero-button" href="#orcamento" target="_blank" rel="noreferrer"><MessageCircle /> Pedir orçamento</a><a className="secondary-button" href="#servicos">Conhecer serviços <ChevronRight /></a></div><div className="trust-row"><span><BadgeCheck /> Serviço com garantia</span><span><Clock3 /> Visita com hora marcada</span><span><ShieldCheck /> Atendimento seguro</span></div></div><div className="hero-visual"><div className="yellow-orbit orbit-one" /><div className="yellow-orbit orbit-two" /><img src="/tecnico-3d.png" alt="Técnico de assistência com uniforme amarelo" /><div className="floating-card card-rating"><span>4,9</span><div><strong>Excelente</strong><small>clientes satisfeitos</small></div></div><div className="floating-card card-warranty"><ShieldCheck /><div><strong>Garantia</strong><small>em cada serviço</small></div></div></div></section>
     <section id="servicos" className="services-section"><div className="section-intro"><span className="eyebrow">SOLUÇÃO SEM COMPLICAÇÃO</span><h2>O cuidado certo para cada equipamento</h2><p>Do diagnóstico à entrega, você acompanha tudo com clareza.</p></div><div className="service-grid">{services.map(({ icon: Icon, title, text }) => <article className="service-card" key={title}><div className="service-icon"><Icon /></div><h3>{title}</h3><p>{text}</p><span>Saiba mais <ChevronRight /></span></article>)}</div></section>
     <section id="como-funciona" className="process-section"><div className="process-copy"><span className="eyebrow light">ATENDIMENTO TRANSPARENTE</span><h2>Você sabe o que será feito antes de aprovar.</h2><p>Sem surpresa no orçamento e sem linguagem complicada.</p><a className="light-link" href={`https://wa.me/${company.whatsapp}`} target="_blank" rel="noreferrer">Falar com o técnico <ChevronRight /></a></div><div className="steps"><Step number="01" icon={MessageCircle} title="Conte o problema" text="Preencha a prévia do orçamento e explique o defeito do aparelho." /><Step number="02" icon={Wrench} title="Receba o diagnóstico" text="Avaliamos o equipamento e apresentamos a solução." /><Step number="03" icon={PackageCheck} title="Serviço entregue" text="Você recebe o equipamento e o recibo com garantia." /></div></section>
@@ -215,7 +232,68 @@ function PanelButton({ icon: Icon, label, active, onClick }: { icon: typeof Home
 function DashboardHome({ receipts, onNew, onHistory }: { receipts: Receipt[]; onNew: () => void; onHistory: () => void }) { const total = receipts.reduce((sum, item) => sum + Number(item.total.replace(/\./g, "").replace(",", ".") || 0), 0); return <section className="panel-section"><div className="stats-grid"><Stat icon={ReceiptText} label="Recibos emitidos" value={String(receipts.length)} tone="yellow" /><Stat icon={CheckCircle2} label="Serviços concluídos" value={String(receipts.filter((r) => r.status === "Concluído").length)} tone="green" /><Stat icon={BadgeCheck} label="Valor registrado" value={total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} tone="dark" /></div><div className="quick-grid"><button className="quick-new" onClick={onNew}><span><Plus /></span><div><small>AÇÃO RÁPIDA</small><strong>Criar novo recibo</strong><p>Preencha os dados e gere o documento em poucos minutos.</p></div><ChevronRight /></button><article className="recent-card"><div className="card-heading"><div><small>ATIVIDADE RECENTE</small><h2>Últimos recibos</h2></div><button onClick={onHistory}>Ver todos</button></div>{receipts.length === 0 ? <div className="mini-empty"><FileText /><span>Os recibos emitidos aparecerão aqui.</span></div> : receipts.slice(0, 3).map((r) => <div className="mini-receipt" key={r.id}><span>{r.number}</span><div><strong>{r.customer}</strong><small>{r.equipment}</small></div><b>{BRL(r.total)}</b></div>)}</article></div></section> }
 function Stat({ icon: Icon, label, value, tone }: { icon: typeof Home; label: string; value: string; tone: string }) { return <article className={`stat-card stat-${tone}`}><div className="stat-icon"><Icon /></div><div><span>{label}</span><strong>{value}</strong></div></article> }
 function ReceiptEditor({ company, draft, setDraft, receipt, onSave }: { company: Company; draft: Receipt; setDraft: (r: Receipt) => void; receipt: Receipt; onSave: () => void }) { const set = (key: keyof Receipt, value: string) => setDraft({ ...draft, [key]: value }); return <section className="editor-layout panel-section"><div className="editor-form"><div className="editor-heading"><div><span className="eyebrow">DADOS DO ATENDIMENTO</span><h2>{draft.id ? "Editar recibo" : "Novo recibo"}</h2></div><span className="draft-badge">Rascunho automático</span></div><div className="form-block"><h3>Cliente</h3><div className="form-grid"><Field label="Nome completo"><input value={draft.customer} onChange={(e) => set("customer", e.target.value)} placeholder="Nome do cliente" /></Field><Field label="Telefone / WhatsApp"><input value={draft.customerPhone} onChange={(e) => set("customerPhone", e.target.value)} placeholder="(21) 99999-9999" /></Field></div></div><div className="form-block"><h3>Equipamento</h3><div className="form-grid"><Field label="Tipo de equipamento"><input value={draft.equipment} onChange={(e) => set("equipment", e.target.value)} placeholder="Ex.: Máquina de lavar" /></Field><Field label="Marca e modelo"><input value={draft.brandModel} onChange={(e) => set("brandModel", e.target.value)} placeholder="Ex.: Brastemp BWK12" /></Field><Field label="Número de série"><input value={draft.serial} onChange={(e) => set("serial", e.target.value)} placeholder="Opcional" /></Field><Field label="Data"><input type="date" value={draft.createdAt} onChange={(e) => set("createdAt", e.target.value)} /></Field><Field label="Problema informado" wide><textarea value={draft.problem} onChange={(e) => set("problem", e.target.value)} placeholder="Descreva o relato do cliente" /></Field></div></div><div className="form-block"><h3>Serviço e valores</h3><div className="form-grid"><Field label="Serviço realizado" wide><textarea value={draft.service} onChange={(e) => set("service", e.target.value)} placeholder="Descreva o diagnóstico e o serviço" /></Field><Field label="Peças (R$)"><input value={draft.parts} onChange={(e) => set("parts", e.target.value)} /></Field><Field label="Mão de obra (R$)"><input value={draft.labor} onChange={(e) => set("labor", e.target.value)} /></Field><Field label="Total (R$)"><input value={draft.total} onChange={(e) => set("total", e.target.value)} /></Field><Field label="Forma de pagamento"><select value={draft.payment} onChange={(e) => set("payment", e.target.value)}><option>Pix</option><option>Dinheiro</option><option>Cartão</option><option>Transferência</option></select></Field><Field label="Garantia"><input value={draft.warranty} onChange={(e) => set("warranty", e.target.value)} /></Field><Field label="Status"><select value={draft.status} onChange={(e) => set("status", e.target.value)}><option>Concluído</option><option>Em andamento</option></select></Field><Field label="Observações" wide><textarea value={draft.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Orientações, condições da garantia ou observações" /></Field></div></div><div className="editor-actions"><button className="secondary-button" onClick={() => window.print()}><Printer /> Imprimir / salvar PDF</button><button className="whatsapp-button" disabled={!digits(draft.customerPhone)} onClick={() => window.open(whatsappLink(draft.customerPhone, receiptWhatsappMessage(company, receipt)), "_blank")}><MessageCircle /> Enviar no WhatsApp</button><button className="primary-button" onClick={onSave}><BadgeCheck /> Salvar recibo</button></div></div><ReceiptPreview company={company} receipt={receipt} /></section> }
-function ReceiptPreview({ company, receipt }: { company: Company; receipt: Receipt }) { return <aside className="preview-column"><span className="preview-label">PRÉVIA DO RECIBO</span><article className="receipt-paper" id="receipt-print"><header><div className="receipt-brand"><LogoMark /><div><strong>{company.brand}</strong><span>Assistência técnica</span></div></div><div className="receipt-number"><span>RECIBO DE SERVIÇO</span><strong>{receipt.number || "RT-0000-0000"}</strong></div></header><div className="company-line"><span>{company.technician}</span><span>{company.document}</span><span>{company.phone}</span><span>{company.address}</span></div><div className="receipt-title"><div><small>CLIENTE</small><strong>{receipt.customer || "Nome do cliente"}</strong><span>{receipt.customerPhone || "Telefone"}</span></div><div><small>DATA</small><strong>{receipt.createdAt ? new Date(`${receipt.createdAt}T12:00:00`).toLocaleDateString("pt-BR") : "--/--/----"}</strong></div></div><div className="receipt-info-grid"><div><small>EQUIPAMENTO</small><strong>{receipt.equipment || "Não informado"}</strong></div><div><small>MARCA / MODELO</small><strong>{receipt.brandModel || "Não informado"}</strong></div><div><small>NÚMERO DE SÉRIE</small><strong>{receipt.serial || "Não informado"}</strong></div><div><small>GARANTIA</small><strong>{receipt.warranty || company.warranty}</strong></div></div><div className="receipt-description"><small>PROBLEMA INFORMADO</small><p>{receipt.problem || "Descrição informada pelo cliente."}</p><small>SERVIÇO REALIZADO</small><p>{receipt.service || "Descrição do diagnóstico e do serviço realizado."}</p>{receipt.notes && <><small>OBSERVAÇÕES</small><p>{receipt.notes}</p></>}</div><div className="receipt-values"><div><span>Peças</span><strong>{BRL(receipt.parts)}</strong></div><div><span>Mão de obra</span><strong>{BRL(receipt.labor)}</strong></div><div className="receipt-total"><span>Total</span><strong>{BRL(receipt.total)}</strong></div><small>Pagamento: {receipt.payment}</small></div><div className="signature"><span /><strong>{company.technician}</strong><small>Técnico responsável</small></div><footer><ShieldCheck /><span>Serviço registrado com transparência e garantia.</span></footer></article><div className="preview-actions"><button className="print-button" onClick={() => window.print()}><Printer /> Imprimir ou salvar em PDF</button><button className="whatsapp-button full-action" disabled={!digits(receipt.customerPhone)} onClick={() => window.open(whatsappLink(receipt.customerPhone, receiptWhatsappMessage(company, receipt)), "_blank")}><MessageCircle /> Abrir WhatsApp do cliente</button></div></aside> }
+function ReceiptPreview({ company, receipt }: { company: Company; receipt: Receipt }) { return <aside className="preview-column"><span className="preview-label">PRÉVIA DO RECIBO</span><article className="receipt-paper" id="receipt-print"><div className="receipt-watermark" aria-hidden="true"><LogoMark /><strong>{company.brand}</strong></div><header><div className="receipt-brand"><LogoMark /><div><strong>{company.brand}</strong><span>Assistência técnica</span></div></div><div className="receipt-number"><span>RECIBO DE SERVIÇO</span><strong>{receipt.number || "RT-0000-0000"}</strong></div></header><div className="company-line"><span>{company.technician}</span><span>{company.document}</span><span>{company.phone}</span><span>{company.address}</span></div><div className="receipt-title"><div><small>CLIENTE</small><strong>{receipt.customer || "Nome do cliente"}</strong><span>{receipt.customerPhone || "Telefone"}</span></div><div><small>DATA</small><strong>{receipt.createdAt ? new Date(`${receipt.createdAt}T12:00:00`).toLocaleDateString("pt-BR") : "--/--/----"}</strong></div></div><div className="receipt-info-grid"><div><small>EQUIPAMENTO</small><strong>{receipt.equipment || "Não informado"}</strong></div><div><small>MARCA / MODELO</small><strong>{receipt.brandModel || "Não informado"}</strong></div><div><small>NÚMERO DE SÉRIE</small><strong>{receipt.serial || "Não informado"}</strong></div><div><small>GARANTIA</small><strong>{receipt.warranty || company.warranty}</strong></div></div><div className="receipt-description"><small>PROBLEMA INFORMADO</small><p>{receipt.problem || "Descrição informada pelo cliente."}</p><small>SERVIÇO REALIZADO</small><p>{receipt.service || "Descrição do diagnóstico e do serviço realizado."}</p>{receipt.notes && <><small>OBSERVAÇÕES</small><p>{receipt.notes}</p></>}</div><div className="receipt-values"><div><span>Peças</span><strong>{BRL(receipt.parts)}</strong></div><div><span>Mão de obra</span><strong>{BRL(receipt.labor)}</strong></div><div className="receipt-total"><span>Total</span><strong>{BRL(receipt.total)}</strong></div><small>Pagamento: {receipt.payment}</small></div><DocumentSignature company={company} /><div className="signature"><span /><strong>{company.technician}</strong><small>Técnico responsável</small></div><footer><ShieldCheck /><span>Serviço registrado com transparência e garantia.</span></footer></article><div className="preview-actions"><button className="print-button" onClick={() => window.print()}><Printer /> Imprimir ou salvar em PDF</button><button className="whatsapp-button full-action" disabled={!digits(receipt.customerPhone)} onClick={() => window.open(whatsappLink(receipt.customerPhone, receiptWhatsappMessage(company, receipt)), "_blank")}><MessageCircle /> Abrir WhatsApp do cliente</button></div></aside> }
+
+function DocumentSignature({ company }: { company: Company }) {
+  if (!company.signatureSrc) return null;
+  const x = Number.isFinite(company.signatureX) ? company.signatureX : 50;
+  const y = Number.isFinite(company.signatureY) ? company.signatureY : 82;
+  const width = Number.isFinite(company.signatureWidth) ? company.signatureWidth : 28;
+  return <img className="document-signature-image" src={company.signatureSrc} alt="Assinatura do técnico" style={{ left: `${x}%`, top: `${y}%`, width: `${width}%` }} />;
+}
+
+function SignatureConfigurator({ company, setCompany }: { company: Company; setCompany: (company: Company) => void }) {
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState("");
+  const x = Number.isFinite(company.signatureX) ? company.signatureX : 50;
+  const y = Number.isFinite(company.signatureY) ? company.signatureY : 82;
+  const width = Number.isFinite(company.signatureWidth) ? company.signatureWidth : 28;
+
+  const uploadSignature = async (file?: File) => {
+    if (!file) return;
+    if (file.type !== "image/png") return setMessage("A assinatura precisa ser um arquivo PNG com fundo transparente.");
+    if (file.size > 5_000_000) return setMessage("Use um PNG de até 5 MB.");
+    setUploading(true); setMessage("");
+    try {
+      const form = new FormData();
+      form.append("file", file); form.append("id", "assinatura-oficial"); form.append("kind", "signature");
+      const response = await fetch("/api/media", { method: "POST", body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Falha no upload");
+      setCompany({ ...company, signatureSrc: payload.src, signatureX: x, signatureY: y, signatureWidth: width });
+      setMessage("Assinatura enviada. Clique em Salvar alterações para deixá-la permanente.");
+    } catch (error) {
+      setMessage(`Não foi possível enviar a assinatura: ${error instanceof Error ? error.message : "erro desconhecido"}`);
+    } finally { setUploading(false); }
+  };
+
+  const moveFromPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!(event.buttons & 1)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const nextX = Math.max(4, Math.min(96, ((event.clientX - rect.left) / rect.width) * 100));
+    const nextY = Math.max(4, Math.min(96, ((event.clientY - rect.top) / rect.height) * 100));
+    setCompany({ ...company, signatureX: Math.round(nextX * 10) / 10, signatureY: Math.round(nextY * 10) / 10 });
+  };
+
+  return <div className="signature-config">
+    <div className="signature-config-head"><div><span className="eyebrow">ASSINATURA PADRÃO</span><h3>Assinatura automática nos documentos</h3><p>Envie uma única vez a assinatura em PNG. Ela fica salva na nuvem e será usada automaticamente nos recibos e nos documentos/PDFs que utilizarem o padrão da empresa.</p></div><Upload /></div>
+    <div className="signature-config-grid">
+      <div className="signature-controls">
+        <label className="signature-upload"><input type="file" accept="image/png,.png" onChange={(e) => uploadSignature(e.target.files?.[0])} disabled={uploading} /><Upload /><div><strong>{uploading ? "Enviando..." : company.signatureSrc ? "Trocar assinatura PNG" : "Enviar assinatura PNG"}</strong><small>Preferencialmente fundo transparente · até 5 MB</small></div></label>
+        {company.signatureSrc && <button type="button" className="secondary-button signature-remove" onClick={() => setCompany({ ...company, signatureSrc: "" })}><Trash2 /> Remover assinatura</button>}
+        <label className="signature-range"><span>Tamanho <b>{Math.round(width)}%</b></span><input type="range" min="10" max="55" step="1" value={width} onChange={(e) => setCompany({ ...company, signatureWidth: Number(e.target.value) })} /></label>
+        <div className="signature-coordinates"><span>Posição X: <b>{x.toFixed(1)}%</b></span><span>Posição Y: <b>{y.toFixed(1)}%</b></span></div>
+        <button type="button" className="secondary-button" onClick={() => setCompany({ ...company, signatureX: 50, signatureY: 82, signatureWidth: 28 })}>Restaurar posição padrão</button>
+        {message && <p className="signature-message">{message}</p>}
+      </div>
+      <div><span className="signature-preview-label">Arraste a assinatura para a posição desejada</span><div className="signature-position-preview" onPointerMove={moveFromPointer} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); moveFromPointer(e); }}>
+        <div className="signature-preview-lines"><b>RECIBO / DOCUMENTO</b><span /><span /><span /><span /></div>
+        {company.signatureSrc ? <img draggable={false} src={company.signatureSrc} alt="Prévia da assinatura" style={{ left: `${x}%`, top: `${y}%`, width: `${width}%` }} /> : <div className="signature-preview-empty">Envie o PNG da assinatura para posicioná-la</div>}
+      </div></div>
+    </div>
+  </div>;
+}
+
 function Stars({ value, onChange }: { value: number; onChange?: (value: number) => void }) { return <div className="stars" aria-label={`${value} de 5 estrelas`}>{[1,2,3,4,5].map((star) => <button key={star} type="button" className={star <= value ? "star active" : "star"} onClick={() => onChange?.(star)} disabled={!onChange} aria-label={`${star} estrela${star > 1 ? "s" : ""}`}><Star /></button>)}</div> }
 function ReviewAvatar({ review }: { review: Review }) { return review.photo ? <img className="review-avatar" src={review.photo} alt={`Foto de ${review.name}`} /> : <div className="review-avatar review-avatar-fallback">{review.name.trim().slice(0,1).toUpperCase() || "C"}</div> }
 function ReviewsSection({ reviews, onAdd }: { reviews: Review[]; onAdd: (review: Omit<Review, "id" | "createdAt">) => void }) {
