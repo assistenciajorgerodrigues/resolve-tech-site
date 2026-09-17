@@ -255,12 +255,57 @@ function DocumentSignature({ company }: { company: Company }) {
   return <img className="document-signature-image" src={company.signatureSrc} alt="Assinatura do técnico" style={{ left: `${x}%`, top: `${y}%`, width: `${width}%` }} />;
 }
 
+function SignaturePlacementReceipt({ company, onPlace, onDragStart, onDragEnd }: { company: Company; onPlace: (event: React.PointerEvent<HTMLElement>) => void; onDragStart: (event: React.PointerEvent<HTMLElement>) => void; onDragEnd: (event: React.PointerEvent<HTMLElement>) => void }) {
+  const sample: Receipt = {
+    ...emptyReceipt,
+    number: "RT-2026-0001",
+    createdAt: new Date().toISOString().slice(0, 10),
+    customer: "Nome do cliente",
+    customerPhone: "(21) 99999-9999",
+    equipment: "Equipamento",
+    brandModel: "Marca / modelo",
+    serial: "000000000",
+    problem: "Descrição informada pelo cliente.",
+    service: "Descrição do diagnóstico e do serviço realizado.",
+    parts: "50,00",
+    labor: "100,00",
+    total: "150,00",
+    payment: "Pix",
+    warranty: company.warranty || "90 dias",
+  };
+  return <article
+    className="receipt-paper signature-receipt-model"
+    onPointerDown={onDragStart}
+    onPointerMove={onPlace}
+    onPointerUp={onDragEnd}
+    onPointerCancel={onDragEnd}
+    title="Clique ou arraste em qualquer ponto do recibo para posicionar a assinatura"
+  >
+    <div className="receipt-watermark" aria-hidden="true"><LogoMark /><strong>{company.brand}</strong></div>
+    <header><div className="receipt-brand"><LogoMark /><div><strong>{company.brand}</strong><span>Assistência técnica</span></div></div><div className="receipt-number"><span>RECIBO DE SERVIÇO</span><strong>{sample.number}</strong></div></header>
+    <div className="company-line"><span>{company.technician}</span><span>{company.document}</span><span>{company.phone}</span><span>{company.address}</span></div>
+    <div className="receipt-title"><div><small>CLIENTE</small><strong>{sample.customer}</strong><span>{sample.customerPhone}</span></div><div><small>DATA</small><strong>{new Date(`${sample.createdAt}T12:00:00`).toLocaleDateString("pt-BR")}</strong></div></div>
+    <div className="receipt-info-grid"><div><small>EQUIPAMENTO</small><strong>{sample.equipment}</strong></div><div><small>MARCA / MODELO</small><strong>{sample.brandModel}</strong></div><div><small>NÚMERO DE SÉRIE</small><strong>{sample.serial}</strong></div><div><small>GARANTIA</small><strong>{sample.warranty}</strong></div></div>
+    <div className="receipt-description"><small>PROBLEMA INFORMADO</small><p>{sample.problem}</p><small>SERVIÇO REALIZADO</small><p>{sample.service}</p></div>
+    <div className="receipt-values"><div><span>Peças</span><strong>{BRL(sample.parts)}</strong></div><div><span>Mão de obra</span><strong>{BRL(sample.labor)}</strong></div><div className="receipt-total"><span>Total</span><strong>{BRL(sample.total)}</strong></div><small>Pagamento: {sample.payment}</small></div>
+    <DocumentSignature company={company} />
+    <div className="signature"><span /><strong>{company.technician}</strong><small>Técnico responsável</small></div>
+    <footer><ShieldCheck /><span>Serviço registrado com transparência e garantia.</span></footer>
+    <div className="signature-position-crosshair" style={{ left: `${company.signatureX}%`, top: `${company.signatureY}%` }} aria-hidden="true" />
+  </article>;
+}
+
 function SignatureConfigurator({ company, setCompany }: { company: Company; setCompany: (company: Company) => void }) {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
+  const [dragging, setDragging] = useState(false);
   const x = Number.isFinite(company.signatureX) ? company.signatureX : 50;
   const y = Number.isFinite(company.signatureY) ? company.signatureY : 82;
   const width = Number.isFinite(company.signatureWidth) ? company.signatureWidth : 28;
+
+  const updatePlacement = (patch: Partial<Pick<Company, "signatureX" | "signatureY" | "signatureWidth">>) => {
+    setCompany({ ...company, ...patch });
+  };
 
   const uploadSignature = async (file?: File) => {
     if (!file) return;
@@ -274,35 +319,54 @@ function SignatureConfigurator({ company, setCompany }: { company: Company; setC
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error || "Falha no upload");
       setCompany({ ...company, signatureSrc: payload.src, signatureX: x, signatureY: y, signatureWidth: width });
-      setMessage("Assinatura enviada. Clique em Salvar alterações para deixá-la permanente.");
+      setMessage("Assinatura enviada. Posicione no recibo abaixo e clique em Salvar alterações.");
     } catch (error) {
       setMessage(`Não foi possível enviar a assinatura: ${error instanceof Error ? error.message : "erro desconhecido"}`);
     } finally { setUploading(false); }
   };
 
-  const moveFromPointer = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!(event.buttons & 1)) return;
+  const placeAtPointer = (event: React.PointerEvent<HTMLElement>, force = false) => {
+    if (!force && !dragging) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const nextX = Math.max(4, Math.min(96, ((event.clientX - rect.left) / rect.width) * 100));
-    const nextY = Math.max(4, Math.min(96, ((event.clientY - rect.top) / rect.height) * 100));
+    const nextX = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+    const nextY = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
     setCompany({ ...company, signatureX: Math.round(nextX * 10) / 10, signatureY: Math.round(nextY * 10) / 10 });
   };
 
+  const dragStart = (event: React.PointerEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+    placeAtPointer(event, true);
+  };
+  const dragEnd = (event: React.PointerEvent<HTMLElement>) => {
+    setDragging(false);
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* captura já liberada */ }
+  };
+  const nudge = (dx: number, dy: number) => updatePlacement({
+    signatureX: Math.max(0, Math.min(100, Math.round((x + dx) * 10) / 10)),
+    signatureY: Math.max(0, Math.min(100, Math.round((y + dy) * 10) / 10)),
+  });
+
   return <div className="signature-config">
-    <div className="signature-config-head"><div><span className="eyebrow">ASSINATURA PADRÃO</span><h3>Assinatura automática nos documentos</h3><p>Envie uma única vez a assinatura em PNG. Ela fica salva na nuvem e será usada automaticamente nos recibos e nos documentos/PDFs que utilizarem o padrão da empresa.</p></div><Upload /></div>
-    <div className="signature-config-grid">
+    <div className="signature-config-head"><div><span className="eyebrow">ASSINATURA PADRÃO</span><h3>Posicione a assinatura exatamente no recibo</h3><p>O modelo abaixo é o mesmo recibo usado na geração e no PDF. Clique ou arraste a assinatura para qualquer ponto. A posição X/Y e o tamanho ficam salvos no D1 e serão repetidos exatamente em todos os novos recibos e documentos que usam esse padrão.</p></div><Upload /></div>
+    <div className="signature-config-grid exact-signature-grid">
       <div className="signature-controls">
-        <label className="signature-upload"><input type="file" accept="image/png,.png" onChange={(e) => uploadSignature(e.target.files?.[0])} disabled={uploading} /><Upload /><div><strong>{uploading ? "Enviando..." : company.signatureSrc ? "Trocar assinatura PNG" : "Enviar assinatura PNG"}</strong><small>Preferencialmente fundo transparente · até 5 MB</small></div></label>
+        <label className="signature-upload"><input type="file" accept="image/png,.png" onChange={(e) => uploadSignature(e.target.files?.[0])} disabled={uploading} /><Upload /><div><strong>{uploading ? "Enviando..." : company.signatureSrc ? "Trocar assinatura PNG" : "Enviar assinatura PNG"}</strong><small>PNG com fundo transparente · até 5 MB</small></div></label>
         {company.signatureSrc && <button type="button" className="secondary-button signature-remove" onClick={() => setCompany({ ...company, signatureSrc: "" })}><Trash2 /> Remover assinatura</button>}
-        <label className="signature-range"><span>Tamanho <b>{Math.round(width)}%</b></span><input type="range" min="10" max="55" step="1" value={width} onChange={(e) => setCompany({ ...company, signatureWidth: Number(e.target.value) })} /></label>
-        <div className="signature-coordinates"><span>Posição X: <b>{x.toFixed(1)}%</b></span><span>Posição Y: <b>{y.toFixed(1)}%</b></span></div>
+        <label className="signature-range"><span>Tamanho da assinatura <b>{width.toFixed(1)}%</b></span><input type="range" min="8" max="55" step="0.5" value={width} onChange={(e) => updatePlacement({ signatureWidth: Number(e.target.value) })} /></label>
+        <div className="signature-number-grid">
+          <label><span>Posição X (%)</span><input type="number" min="0" max="100" step="0.1" value={x} onChange={(e) => updatePlacement({ signatureX: Math.max(0, Math.min(100, Number(e.target.value))) })} /></label>
+          <label><span>Posição Y (%)</span><input type="number" min="0" max="100" step="0.1" value={y} onChange={(e) => updatePlacement({ signatureY: Math.max(0, Math.min(100, Number(e.target.value))) })} /></label>
+          <label><span>Largura (%)</span><input type="number" min="8" max="55" step="0.5" value={width} onChange={(e) => updatePlacement({ signatureWidth: Math.max(8, Math.min(55, Number(e.target.value))) })} /></label>
+        </div>
+        <div className="signature-nudge-wrap"><span>Ajuste fino (0,5%)</span><div className="signature-nudge-pad"><span /><button type="button" onClick={() => nudge(0,-0.5)} aria-label="Mover para cima">↑</button><span /><button type="button" onClick={() => nudge(-0.5,0)} aria-label="Mover para esquerda">←</button><button type="button" className="nudge-center" disabled>•</button><button type="button" onClick={() => nudge(0.5,0)} aria-label="Mover para direita">→</button><span /><button type="button" onClick={() => nudge(0,0.5)} aria-label="Mover para baixo">↓</button><span /></div></div>
+        <div className="signature-coordinates"><span>X: <b>{x.toFixed(1)}%</b></span><span>Y: <b>{y.toFixed(1)}%</b></span><span>Tamanho: <b>{width.toFixed(1)}%</b></span></div>
         <button type="button" className="secondary-button" onClick={() => setCompany({ ...company, signatureX: 50, signatureY: 82, signatureWidth: 28 })}>Restaurar posição padrão</button>
+        <p className="signature-message signature-save-note">Depois de posicionar, clique em <strong>Salvar alterações</strong> no final da página. Essa posição será usada nos próximos recibos e PDFs.</p>
         {message && <p className="signature-message">{message}</p>}
       </div>
-      <div><span className="signature-preview-label">Arraste a assinatura para a posição desejada</span><div className="signature-position-preview" onPointerMove={moveFromPointer} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); moveFromPointer(e); }}>
-        <div className="signature-preview-lines"><b>RECIBO / DOCUMENTO</b><span /><span /><span /><span /></div>
-        {company.signatureSrc ? <img draggable={false} src={company.signatureSrc} alt="Prévia da assinatura" style={{ left: `${x}%`, top: `${y}%`, width: `${width}%` }} /> : <div className="signature-preview-empty">Envie o PNG da assinatura para posicioná-la</div>}
-      </div></div>
+      <div className="signature-real-preview"><span className="signature-preview-label">MODELO REAL DO RECIBO — clique ou arraste para posicionar</span><SignaturePlacementReceipt company={company} onPlace={(e) => placeAtPointer(e)} onDragStart={dragStart} onDragEnd={dragEnd} /></div>
     </div>
   </div>;
 }
